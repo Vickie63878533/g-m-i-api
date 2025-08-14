@@ -265,6 +265,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if resp.StatusCode != http.StatusOK {
+			log.Printf("response err : %d", resp.StatusCode)
 			// 如果上游返回了错误, 直接将错误信息透传给客户端
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(resp.StatusCode)
@@ -379,10 +380,10 @@ func main() {
 		port = value
 	}
 
-	addr := ":" + strconv.Itoa(port)
+	addr := "0.0.0.0:" + strconv.Itoa(port)
 
 	// 启动服务器
-	log.Printf("🚀 Server starting on http://localhost:%s", port)
+	log.Printf("🚀 Server starting on %s", addr)
 	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatalf("💀 Could not start server: %s\n", err)
 	}
