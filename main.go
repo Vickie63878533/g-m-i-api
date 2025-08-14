@@ -5,10 +5,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	"io"
 	"log"
 	"math/rand"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -64,65 +67,6 @@ var (
 	// 初始化随机数生成器
 	rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 )
-
-// ========= 2. 用于 JSON 序列化的结构体 =========
-// Go是强类型语言, 我们需要定义结构体来处理 JSON 数据
-
-// Chat 请求体结构
-type ChatRequest struct {
-	Model       string   `json:"model"`
-	Messages    []any    `json:"messages"` // 使用 any (interface{}) 兼容各种消息格式
-	Stream      bool     `json:"stream"`
-	Temperature *float64 `json:"temperature,omitempty"`
-	MaxTokens   *int     `json:"max_tokens,omitempty"`
-	TopP        *float64 `json:"top_p,omitempty"`
-}
-
-// 转发到上游服务的 Payload 结构
-type ForwardPayload struct {
-	Model       string  `json:"model"`
-	Messages    []any   `json:"messages"`
-	Stream      bool    `json:"stream"`
-	Temperature float64 `json:"temperature"`
-	MaxTokens   int     `json:"max_tokens"`
-	TopP        float64 `json:"top_p"`
-}
-
-// 非流式响应的转换结构 (用于模拟 OpenAI 格式)
-type FinalChatResponse struct {
-	ID      string    `json:"id"`
-	Object  string    `json:"object"`
-	Created int64     `json:"created"`
-	Model   string    `json:"model"`
-	Choices []Choice  `json:"choices"`
-	Usage   UsageData `json:"usage"`
-}
-type Choice struct {
-	Index        int             `json:"index"`
-	Message      ResponseMessage `json:"message"`
-	FinishReason string          `json:"finish_reason"`
-}
-type ResponseMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-type UsageData struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
-}
-
-// 上游服务返回的 JSON 结构 (仅需要我们关心的字段)
-type UpstreamResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Result string    `json:"result"` // 备用字段
-	Usage  UsageData `json:"usage"`
-}
 
 // ========= 3. 辅助函数 =========
 
@@ -182,134 +126,125 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 
 // handleChatCompletions 处理 /v1/chat/completions 的请求
 func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	// 1. 解码客户端请求体
-	var chatReq ChatRequest
-	if err := json.NewDecoder(r.Body).Decode(&chatReq); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid JSON body", "invalid_request_error")
-		return
+	targetURL, _ := url.Parse("https://console.gmicloud.ai/chat")
+	// 创建反向代理
+	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+
+	// 自定义 Director 函数来修改请求
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req) // 执行默认的 Director 逻辑 (如设置 X-Forwarded-For 等)
+
+		// 设置目标请求的 URL scheme, host 和 path
+		req.URL.Scheme = targetURL.Scheme
+		req.URL.Host = targetURL.Host
+		req.URL.Path = targetURL.Path
+
+		// 修改 Host 头部
+		req.Host = targetURL.Host
+
+		model := "openai/gpt-oss-120b"
+
+		if req.Body != nil {
+			bodyBytes, readErr := io.ReadAll(req.Body)
+			if readErr != nil {
+				log.Printf("Error reading request body: %v. Forwarding without model injection.", readErr)
+				req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			} else {
+				req.Body.Close()
+				var data map[string]interface{}
+				if unmarshalErr := json.Unmarshal(bodyBytes, &data); unmarshalErr == nil {
+					if modelValue, ok := data["model"]; ok {
+						if modelValueStr, ok := modelValue.(string); ok {
+							model = modelValueStr
+						}
+					}
+					modifiedBodyBytes, marshalErr := json.Marshal(data)
+					if marshalErr == nil {
+						req.Body = io.NopCloser(bytes.NewBuffer(modifiedBodyBytes))
+						req.ContentLength = int64(len(modifiedBodyBytes))
+						req.GetBody = func() (io.ReadCloser, error) {
+							return io.NopCloser(bytes.NewBuffer(modifiedBodyBytes)), nil
+						}
+						log.Printf("Successfully get model '%s' into request body.", model)
+					} else {
+						log.Printf("Error marshalling modified body: %v. Forwarding original body.", marshalErr)
+						req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+						req.ContentLength = int64(len(bodyBytes))
+						req.GetBody = func() (io.ReadCloser, error) {
+							return io.NopCloser(bytes.NewBuffer(bodyBytes)), nil
+						}
+					}
+				} else {
+					log.Printf("Error unmarshalling request body: %v. Forwarding original body.", unmarshalErr)
+					req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+					req.ContentLength = int64(len(bodyBytes))
+					req.GetBody = func() (io.ReadCloser, error) {
+						return io.NopCloser(bytes.NewBuffer(bodyBytes)), nil
+					}
+				}
+			}
+		} else if req.Body != nil {
+			log.Printf("Request body present but Content-Type is not application/json ('%s'). Model not injected.", req.Header.Get("Content-Type"))
+		}
+
+		refrere := fmt.Sprintf("https://console.gmicloud.ai/playground/llm/%s/%s?tab=playground", model, uuid.New().String())
+
+		// 5. 设置所有需要的请求头
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", randUA())
+		req.Header.Set("Accept", "application/json, text/plain, */*")
+		req.Header.Set("Accept-Language", "zh-TW,zh;q=0.9")
+		req.Header.Set("Cache-Control", "no-cache")
+		req.Header.Set("Pragma", "no-cache")
+		req.Header.Set("Origin", "https://console.gmicloud.ai")
+		req.Header.Set("Referer", refrere)
+		req.Header.Set("Sec-Ch-Ua", `"Not)A;Brand";v="8", "Chromium";v="137", "Google Chrome";v="137"`)
+		req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
+		req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
+		req.Header.Set("Sec-Fetch-Dest", "empty")
+		req.Header.Set("Sec-Fetch-Mode", "cors")
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 	}
 
-	// 2. 构建转发到上游服务的 payload，并设置默认值
-	payload := ForwardPayload{
-		Messages:    chatReq.Messages,
-		Stream:      chatReq.Stream,
-		Model:       "Qwen3-Coder-480B-A35B-Instruct-FP8",
-		Temperature: 0.5,
-		MaxTokens:   4096,
-		TopP:        0.95,
-	}
-	if chatReq.Model != "" {
-		payload.Model = chatReq.Model
-	}
-	if chatReq.Temperature != nil {
-		payload.Temperature = *chatReq.Temperature
-	}
-	if chatReq.MaxTokens != nil {
-		payload.MaxTokens = *chatReq.MaxTokens
-	}
-	if chatReq.TopP != nil {
-		payload.TopP = *chatReq.TopP
-	}
-
-	// 3. 将 payload 序列化为 JSON
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to create forward payload", "internal_server_error")
-		return
-	}
-
-	// 4. 创建到上游 API 的请求
-	req, err := http.NewRequestWithContext(r.Context(), "POST", "https://console.gmicloud.ai/chat", bytes.NewReader(payloadBytes))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Failed to create upstream request", "internal_server_error")
-		return
-	}
-
-	// 5. 设置所有需要的请求头
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", randUA())
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
-	req.Header.Set("Cache-Control", "no-cache")
-	req.Header.Set("Pragma", "no-cache")
-	req.Header.Set("Origin", "https://console.gmicloud.ai")
-	req.Header.Set("Referer", "https://console.gmicloud.ai/playground/llm/qwen3-coder-480b-a35b-instruct-fp8/1c44de32-1a64-4fd6-959b-273ffefa0a6b?tab=playground")
-	req.Header.Set("Sec-Ch-Ua", `"Not)A;Brand";v="8", "Chromium";v="138", "Google Chrome";v="138"`)
-	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
-	req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
-	req.Header.Set("Sec-Fetch-Dest", "empty")
-	req.Header.Set("Sec-Fetch-Mode", "cors")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-
-	// 6. 发送请求
-	resp, err := apiClient.Do(req)
-	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("Upstream API error: %v", err), "api_error")
-		return
-	}
-	defer resp.Body.Close()
-
-	// 7. 根据是否为流式请求进行不同处理
-	if payload.Stream {
-		// 流式响应: 直接将上游的响应体 pipe 到客户端
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(resp.StatusCode)
-		// io.Copy 会自动处理缓冲区，高效地将数据从源复制到目的地
-		io.Copy(w, resp.Body)
-	} else {
-		// 非流式响应: 读取、转换、再发送
-		bodyBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "Failed to read upstream response", "internal_server_error")
-			return
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if resp.Request == nil {
+			log.Println("WARN: ModifyResponse: resp.Request is nil. Cannot check for API key context.")
+			return nil
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			log.Printf("response err : %d", resp.StatusCode)
-			// 如果上游返回了错误, 直接将错误信息透传给客户端
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(resp.StatusCode)
-			w.Write(bodyBytes)
-			return
-		}
-
-		var upstreamResp UpstreamResponse
-		if err := json.Unmarshal(bodyBytes, &upstreamResp); err != nil {
-			writeError(w, http.StatusInternalServerError, "Failed to parse upstream response", "internal_server_error")
-			return
-		}
-
-		// 构建最终的 OpenAI 格式响应
-		finalResp := FinalChatResponse{
-			ID:      fmt.Sprintf("chatcmpl-%d", time.Now().Unix()),
-			Object:  "chat.completion",
-			Created: time.Now().Unix(),
-			Model:   payload.Model,
-			Choices: []Choice{
-				{
-					Index: 0,
-					Message: ResponseMessage{
-						Role:    "assistant",
-						Content: "", // 默认值
-					},
-					FinishReason: "stop", // 默认值
-				},
-			},
-			Usage: upstreamResp.Usage, // 直接使用上游的 usage
-		}
-
-		if len(upstreamResp.Choices) > 0 {
-			finalResp.Choices[0].Message.Content = upstreamResp.Choices[0].Message.Content
-			if upstreamResp.Choices[0].FinishReason != "" {
-				finalResp.Choices[0].FinishReason = upstreamResp.Choices[0].FinishReason
+			// 1. 读取响应体以获取错误信息
+			bodyBytes, err := io.ReadAll(resp.Body)
+			if err != nil {
+				log.Printf("ERROR: Received status %d, but failed to read response body: %v", resp.StatusCode, err)
+				resp.Body.Close() // 即使读取失败，也要尝试关闭
+				return err        // 返回一个错误，因为响应修改过程失败了
 			}
-		} else if upstreamResp.Result != "" {
-			// 兼容 result 字段
-			finalResp.Choices[0].Message.Content = upstreamResp.Result
+			// 2. 读取后必须关闭原始的 Body
+			_ = resp.Body.Close()
+
+			// 3. 将读取的内容重新包装成一个新的 ReadCloser 放回 Body 中
+			//    这样，调用这个代理的客户端才能接收到原始的错误响应
+			resp.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+			// 4. 记录完整的错误日志
+			log.Printf(
+				"ERROR: Upstream returned non-200 status. Status: %d, Body: %s",
+				resp.StatusCode,
+				string(bodyBytes),
+			)
 		}
 
-		writeJSON(w, http.StatusOK, finalResp)
+		return nil
 	}
+
+	proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, err error) {
+		log.Printf("Proxy error: %v", err)
+		http.Error(rw, "Error forwarding request.", http.StatusBadGateway)
+	}
+
+	proxy.ServeHTTP(w, r)
 }
 
 // ========= 5. 中间件 (Middleware) =========
