@@ -3,13 +3,14 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,35 +21,35 @@ import (
 var (
 	// User-Agent 列表
 	userAgents = []string{
-		 // Windows (已更新)
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36", // Windows 11/10 - Chrome
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0", // Windows 11/10 - Edge
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0", // Windows 11/10 - Firefox
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36 OPR/112.0.0.0", // Windows 11/10 - Opera
+		// Windows (已更新)
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",               // Windows 11/10 - Chrome
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0", // Windows 11/10 - Edge
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0",                                              // Windows 11/10 - Firefox
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36 OPR/112.0.0.0", // Windows 11/10 - Opera
 
-  // macOS (已更新)
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36", // macOS Sonoma (Intel) - Chrome
-  "Mozilla/5.0 (Macintosh; Apple M1 Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15", // macOS Sonoma (Apple Silicon) - Safari
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.5; rv:129.0) Gecko/20100101 Firefox/129.0", // macOS Sonoma (Intel) - Firefox
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0", // macOS Sonoma (Intel) - Edge
-  "Mozilla/5.0 (Macintosh; Apple M2 Pro Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36", // macOS Sonoma (Apple Silicon M2) - Chrome
+		// macOS (已更新)
+		"Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",               // macOS Sonoma (Intel) - Chrome
+		"Mozilla/5.0 (Macintosh; Apple M1 Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15",            // macOS Sonoma (Apple Silicon) - Safari
+		"Mozilla/5.0 (Macintosh; Intel Mac OS X 14.5; rv:129.0) Gecko/20100101 Firefox/129.0",                                              // macOS Sonoma (Intel) - Firefox
+		"Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0", // macOS Sonoma (Intel) - Edge
+		"Mozilla/5.0 (Macintosh; Apple M2 Pro Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",        // macOS Sonoma (Apple Silicon M2) - Chrome
 
-  // Android (保持最新)
-  "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36", // Android 14 (Pixel 8 Pro) - Chrome
-  "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36", // Android 14 (Samsung Galaxy S24 Ultra) - Chrome
-  "Mozilla/5.0 (Linux; Android 13; a_real_phone_lol) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36", // Android 13 - Generic Device - Chrome
-  "Mozilla/5.0 (Linux; Android 14; sdk_gphone64_arm64; rv:129.0) Gecko/129.0 Firefox/129.0", // Android 14 (Emulator) - Firefox
+		// Android (保持最新)
+		"Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",      // Android 14 (Pixel 8 Pro) - Chrome
+		"Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36",         // Android 14 (Samsung Galaxy S24 Ultra) - Chrome
+		"Mozilla/5.0 (Linux; Android 13; a_real_phone_lol) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36", // Android 13 - Generic Device - Chrome
+		"Mozilla/5.0 (Linux; Android 14; sdk_gphone64_arm64; rv:129.0) Gecko/129.0 Firefox/129.0",                                        // Android 14 (Emulator) - Firefox
 
-  // iOS (保持最新)
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", // iPhone - iOS 18 - Safari
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/128.0.6613.25 Mobile/15E148 Safari/604.1", // iPhone - iOS 18 - Chrome
-  "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", // iPad - iOS 18 - Safari
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/128.0 Mobile/15E148", // iPhone - iOS 17.5.1 - Firefox
+		// iOS (保持最新)
+		"Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",        // iPhone - iOS 18 - Safari
+		"Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/128.0.6613.25 Mobile/15E148 Safari/604.1", // iPhone - iOS 18 - Chrome
+		"Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",                 // iPad - iOS 18 - Safari
+		"Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/128.0 Mobile/15E148",                    // iPhone - iOS 17.5.1 - Firefox
 
-  // Linux (保持最新)
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36", // Linux (Ubuntu/Debian) - Chrome
-  "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:129.0) Gecko/20100101 Firefox/129.0", // Linux (Ubuntu) - Firefox
-  "Mozilla/5.0 (X11; Fedora; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36", // Linux (Fedora) - Chrome
+		// Linux (保持最新)
+		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",         // Linux (Ubuntu/Debian) - Chrome
+		"Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:129.0) Gecko/20100101 Firefox/129.0",                                // Linux (Ubuntu) - Firefox
+		"Mozilla/5.0 (X11; Fedora; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36", // Linux (Fedora) - Chrome
 	}
 
 	// 固定的认证 Token
@@ -69,22 +70,22 @@ var (
 
 // Chat 请求体结构
 type ChatRequest struct {
-	Model       string       `json:"model"`
-	Messages    []any        `json:"messages"` // 使用 any (interface{}) 兼容各种消息格式
-	Stream      bool         `json:"stream"`
-	Temperature *float64     `json:"temperature,omitempty"`
-	MaxTokens   *int         `json:"max_tokens,omitempty"`
-	TopP        *float64     `json:"top_p,omitempty"`
+	Model       string   `json:"model"`
+	Messages    []any    `json:"messages"` // 使用 any (interface{}) 兼容各种消息格式
+	Stream      bool     `json:"stream"`
+	Temperature *float64 `json:"temperature,omitempty"`
+	MaxTokens   *int     `json:"max_tokens,omitempty"`
+	TopP        *float64 `json:"top_p,omitempty"`
 }
 
 // 转发到上游服务的 Payload 结构
 type ForwardPayload struct {
-	Model       string   `json:"model"`
-	Messages    []any    `json:"messages"`
-	Stream      bool     `json:"stream"`
-	Temperature float64  `json:"temperature"`
-	MaxTokens   int      `json:"max_tokens"`
-	TopP        float64  `json:"top_p"`
+	Model       string  `json:"model"`
+	Messages    []any   `json:"messages"`
+	Stream      bool    `json:"stream"`
+	Temperature float64 `json:"temperature"`
+	MaxTokens   int     `json:"max_tokens"`
+	TopP        float64 `json:"top_p"`
 }
 
 // 非流式响应的转换结构 (用于模拟 OpenAI 格式)
@@ -97,9 +98,9 @@ type FinalChatResponse struct {
 	Usage   UsageData `json:"usage"`
 }
 type Choice struct {
-	Index        int            `json:"index"`
+	Index        int             `json:"index"`
 	Message      ResponseMessage `json:"message"`
-	FinishReason string         `json:"finish_reason"`
+	FinishReason string          `json:"finish_reason"`
 }
 type ResponseMessage struct {
 	Role    string `json:"role"`
@@ -110,6 +111,7 @@ type UsageData struct {
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
 }
+
 // 上游服务返回的 JSON 结构 (仅需要我们关心的字段)
 type UpstreamResponse struct {
 	Choices []struct {
@@ -121,7 +123,6 @@ type UpstreamResponse struct {
 	Result string    `json:"result"` // 备用字段
 	Usage  UsageData `json:"usage"`
 }
-
 
 // ========= 3. 辅助函数 =========
 
@@ -262,7 +263,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "Failed to read upstream response", "internal_server_error")
 			return
 		}
-		
+
 		if resp.StatusCode != http.StatusOK {
 			// 如果上游返回了错误, 直接将错误信息透传给客户端
 			w.Header().Set("Content-Type", "application/json")
@@ -295,7 +296,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			},
 			Usage: upstreamResp.Usage, // 直接使用上游的 usage
 		}
-		
+
 		if len(upstreamResp.Choices) > 0 {
 			finalResp.Choices[0].Message.Content = upstreamResp.Choices[0].Message.Content
 			if upstreamResp.Choices[0].FinishReason != "" {
@@ -305,7 +306,6 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 兼容 result 字段
 			finalResp.Choices[0].Message.Content = upstreamResp.Result
 		}
-
 
 		writeJSON(w, http.StatusOK, finalResp)
 	}
@@ -373,9 +373,13 @@ func main() {
 	// 使用中间件包装主路由
 	handler := corsAuthMiddleware(mux)
 
-	// 定义服务器地址
-	port := "8080"
-	addr := ":" + port
+	port := 7860
+	valueStr := os.Getenv("PORT")
+	if value, err := strconv.Atoi(valueStr); err == nil {
+		port = value
+	}
+
+	addr := ":" + strconv.Itoa(port)
 
 	// 启动服务器
 	log.Printf("🚀 Server starting on http://localhost:%s", port)
