@@ -190,21 +190,24 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		refrere := fmt.Sprintf("https://console.gmicloud.ai/playground/llm/%s/%s?tab=playground", model, uuid.New().String())
 
+		newHeader := http.Header{}
 		// 5. 设置所有需要的请求头
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", randUA())
-		req.Header.Set("Accept", "application/json, text/plain, */*")
-		req.Header.Set("Accept-Language", "zh-TW,zh;q=0.9")
-		req.Header.Set("Cache-Control", "no-cache")
-		req.Header.Set("Pragma", "no-cache")
-		req.Header.Set("Origin", "https://console.gmicloud.ai")
-		req.Header.Set("Referer", refrere)
-		req.Header.Set("Sec-Ch-Ua", `"Not)A;Brand";v="8", "Chromium";v="137", "Google Chrome";v="137"`)
-		req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
-		req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
-		req.Header.Set("Sec-Fetch-Dest", "empty")
-		req.Header.Set("Sec-Fetch-Mode", "cors")
-		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		newHeader.Set("Content-Type", "application/json")
+		newHeader.Set("User-Agent", randUA())
+		newHeader.Set("Accept", "application/json, text/plain, */*")
+		newHeader.Set("Accept-Language", "zh-TW,zh;q=0.9")
+		newHeader.Set("Cache-Control", "no-cache")
+		newHeader.Set("Pragma", "no-cache")
+		newHeader.Set("Origin", "https://console.gmicloud.ai")
+		newHeader.Set("Referer", refrere)
+		newHeader.Set("Sec-Ch-Ua", `"Not)A;Brand";v="8", "Chromium";v="137", "Google Chrome";v="137"`)
+		newHeader.Set("Sec-Ch-Ua-Mobile", "?0")
+		newHeader.Set("Sec-Ch-Ua-Platform", `"Windows"`)
+		newHeader.Set("Sec-Fetch-Dest", "empty")
+		newHeader.Set("Sec-Fetch-Mode", "cors")
+		newHeader.Set("Sec-Fetch-Site", "same-origin")
+
+		req.Header = newHeader
 	}
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
